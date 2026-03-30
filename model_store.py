@@ -1,7 +1,14 @@
+import asyncio
+import logging
 from typing import Any, AsyncIterator
 
 from bson import ObjectId
 from pymongo import AsyncMongoClient
+from pymongo.errors import PyMongoError
+
+RETRY_DELAY_SECONDS = 1
+
+logger = logging.getLogger(__name__)
 
 class ModelStore:
     def __init__(self, uri: str, db: str) -> None:
@@ -116,3 +123,65 @@ class ModelStore:
         async for doc in cursor:
             doc['id'] = str(doc.pop('_id'))
             yield doc
+    
+    async def watch_models(self) -> AsyncIterator[dict[str, str|float|int]]:
+        pipeline = [
+            {
+                '$match': {
+                    'operationType': 'update'
+                }
+            }
+        ]
+
+        while True:
+            try:
+                async with await self.db.models.watch(pipeline) as stream:
+                    async for change in stream:
+                        doc_key = change.get('documentKey') or {}
+                        obj_id = doc_key.get('_id')
+                        if obj_id is None:
+                            continue
+                        model_id = str(obj_id)
+
+                        update_description = change.get('updateDescription') or {}
+                        updated_fields = update_description.get('updatedFields')
+                        if not isinstance(updated_fields, dict):
+                            continue
+
+                        for field, value in updated_fields.items():
+                            parts = field.split('.')
+                            
+                            if parts[0] == 'training_history':
+
+                                if len(parts) == 3:
+                                    _, metric_name, index_str = parts
+                                    if not index_str.isdigit():
+                                        continue
+
+                                    index = int(index_str)
+                                    yield {
+                                        'id': model_id,
+                                        'metric_name': metric_name,
+                                        'value': value,
+                                        'index': index
+                                    }
+
+                                elif len(parts) == 1:
+                                    if not isinstance(value, dict):
+                                        continue
+
+                                    for nested_field, nested_value in value.items():
+                                        if not isinstance(nested_value, list):
+                                            continue
+                                        
+                                        for i, v in enumerate(nested_value):
+                                            yield {
+                                                'id': model_id,
+                                                'metric_name': nested_field,
+                                                'value': v,
+                                                'index': i
+                                            }
+                                            
+            except PyMongoError:
+                logger.exception('Exception in change stream')
+                await asyncio.sleep(RETRY_DELAY_SECONDS)

@@ -8,7 +8,7 @@ class ModelStoreSettings(BaseModel):
 class Settings(BaseSettings):
     model_store: ModelStoreSettings
     path_prefix: str
-    allow_origin: str
+    allow_origins: list[str]
 
     model_config = SettingsConfigDict(env_file='.env', env_nested_delimiter='__')
 

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
@@ -46,4 +46,16 @@ class MetricHistoryData(JsonModel):
     id: str
     metric_name: str
     metric_history: list[float]
+
+class MetricHistoryRequest(JsonModel):
+    type: Literal['metric-history.subscribe', 'metric-history.unsubscribe']
+    id: str
+    metric_name: str
+
+class MetricHistoryUpdate(JsonModel):
+    type: Literal['metric-history.update']
+    id: str
+    metric_name: str
+    value: float
+    index: int
 
