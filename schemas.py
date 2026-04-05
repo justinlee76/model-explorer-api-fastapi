@@ -4,25 +4,16 @@ from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 from pydantic.alias_generators import to_camel
 
-def model_alias_generator(name: str) -> str:
-    match name:
-        case 'class_':
-            return 'class'
-        case 'kwargs':
-            return 'kwArgs'
-        case _:
-            return to_camel(name)
-
 class ModelData(BaseModel):
     model_config = ConfigDict(
-        alias_generator = model_alias_generator,
+        alias_generator = to_camel,
         validate_by_name=True,
         validate_by_alias=True
     )
     datetime: datetime
     id: str
     module: str
-    class_: str
+    class_name: str
     args: list[Any]
     kwargs: dict[str, Any]
     tag: str
@@ -38,24 +29,32 @@ class JsonModel(BaseModel):
         validate_by_alias=True
     )
 
+class TagRequest(JsonModel):
+    type: Literal['tag.subscribe', 'tag.unsubscribe']
+    tag: str
+
 class MetricHistoryKey(JsonModel):
     id: str
     metric_name: str
     
-class MetricHistoryData(JsonModel):
-    id: str
-    metric_name: str
+class MetricHistoryData(MetricHistoryKey):
     metric_history: list[float]
 
 class MetricHistoryRequest(JsonModel):
     type: Literal['metric-history.subscribe', 'metric-history.unsubscribe']
-    id: str
-    metric_name: str
+    keys: list[MetricHistoryKey]
 
-class MetricHistoryUpdate(JsonModel):
+class MetricHistoryUpdateData(JsonModel):
     type: Literal['metric-history.update']
     id: str
     metric_name: str
-    value: float
     index: int
+    value: float
 
+class ModelInsertOrUpdateData(JsonModel):
+    type: Literal['model.insert', 'model.update']
+    model: ModelData
+
+class ModelDeleteData(JsonModel):
+    type: Literal['model.delete']
+    id: str
