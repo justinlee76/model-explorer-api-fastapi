@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from connection_manager import ConnectionManager
 from model_store import MetricHistory, Model, ModelStore
-from schemas import MetricHistoryRequest, MetricHistoryUpdateData, ModelData, MetricHistoryKey, MetricHistoryData, ModelDeleteData, ModelInsertOrUpdateData, TagRequest
+from schemas import DeleteModelsResponse, MetricHistoryRequest, MetricHistoryUpdateData, ModelData, MetricHistoryKey, MetricHistoryData, ModelDeleteData, ModelInsertOrUpdateData, TagRequest
 
 from config import settings
 
@@ -179,5 +179,10 @@ async def connect_websocket(socket: WebSocket) -> None:
     except Exception:
         logger.exception('Error processing data over web socket')
         await connection_manager.disconnect_one(socket)
+
+@router.post('/delete-models', response_model=DeleteModelsResponse)
+async def delete_models(ids: list[str], store: ModelStore = Depends(get_model_store)) -> DeleteModelsResponse:
+    exceptions = await store.delete_models(ids)
+    return DeleteModelsResponse(errors={id: str(e) for id, e in exceptions.items()})
 
 app.include_router(router)

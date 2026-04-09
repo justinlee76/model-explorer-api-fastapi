@@ -58,3 +58,6 @@ class ModelInsertOrUpdateData(JsonModel):
 class ModelDeleteData(JsonModel):
     type: Literal['model.delete']
     id: str
+
+class DeleteModelsResponse(JsonModel):
+    errors: dict[str, str]

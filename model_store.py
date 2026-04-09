@@ -2,14 +2,20 @@ from datetime import datetime
 import asyncio
 import logging
 from typing import Any, AsyncIterator, Literal, TypedDict
+from enum import Enum
 
 from bson import ObjectId
 from pymongo import AsyncMongoClient
 from pymongo.errors import PyMongoError
+from gridfs import AsyncGridFSBucket, NoFile
 
 RETRY_DELAY_SECONDS = 1
 
 logger = logging.getLogger(__name__)
+
+class ModelStatus(Enum):
+    TRAINING = 0
+    TRAINED = 1
 
 class ModelRequired(TypedDict):
     datetime: datetime
@@ -66,6 +72,7 @@ class ModelStore:
     def __init__(self, uri: str, db: str) -> None:
         self.client = AsyncMongoClient(uri)
         self.db = self.client[db]
+        self.bucket = AsyncGridFSBucket(self.db)
     
     async def close(self) -> None:
         await self.client.close()
@@ -262,3 +269,24 @@ class ModelStore:
             except PyMongoError:
                 logger.exception('Exception in change stream')
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
+
+    async def _delete_model(self, id: str) -> None:
+        obj_id = ObjectId(id)
+        status = await self.db.models.find_one({'_id': obj_id}, {'status': 1})
+        if status is None or status.get('status') == ModelStatus.TRAINING.value:
+            raise Exception('Model cannot be deleted while training')
+        
+        result = await self.db.models.delete_one({'_id': obj_id})
+        if result.deleted_count == 0:
+            return
+        
+        try:
+            await self.bucket.delete(obj_id)
+        except NoFile:
+            logger.warning('No file found for %s', id)
+    
+    async def delete_models(self, ids: list[str]) -> dict[str, BaseException]:
+        tasks = [self._delete_model(id) for id in ids]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        return {id: result for id, result in zip(ids, results) if isinstance(result, BaseException)}
