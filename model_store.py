@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import logging
 from typing import Any, AsyncIterator, Literal, TypedDict
@@ -52,6 +52,29 @@ class ModelDelete(TypedDict):
     tag: str
     id: str
 
+class Task(TypedDict):
+    id: str
+    full_class_name: str
+
+class JobStatus(Enum):
+    SUBMITTED = 0
+    RUNNING = 1
+    COMPLETED = 2
+    FAILED = 3
+    STOPPING = 4
+    STOPPED = 5
+
+class JobArgs(TypedDict):
+    task_id: str
+    args: list[Any]
+    kwargs: dict[str, Any]    
+
+class Job(JobArgs):
+    id: str
+    datetime: datetime
+    status: JobStatus
+    model_id: str | None
+
 def doc_to_model(doc: dict[str, Any]) -> Model:
     model = Model(
         datetime = doc['datetime'],
@@ -67,6 +90,23 @@ def doc_to_model(doc: dict[str, Any]) -> Model:
     if 'training_history' in doc:
         model['training_history'] = doc['training_history']
     return model
+
+def doc_to_task(doc: dict[str, Any]) -> Task:
+    return Task(
+        id = str(doc['_id']),
+        full_class_name=f'{doc["module"]}.{doc["class"]}'
+    )
+
+def doc_to_job(doc: dict[str, Any]) -> Job:
+    return Job(
+        id = str(doc['_id']),
+        datetime = doc['datetime'],
+        status = JobStatus(doc['status']),
+        task_id = str(doc['task_id']),
+        args = doc['args'],
+        kwargs = doc['kwargs'],
+        model_id = str(doc['model_id']) if 'model_id' in doc else None
+    )
 
 class ModelStore:
     def __init__(self, uri: str, db: str) -> None:
@@ -290,3 +330,25 @@ class ModelStore:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         return {id: result for id, result in zip(ids, results) if isinstance(result, BaseException)}
+    
+    async def get_tasks(self) -> AsyncIterator[Task]:
+        async for doc in self.db.tasks.find():
+            yield doc_to_task(doc)
+
+    async def get_last_job(self) -> Job | None:
+        doc = await self.db.jobs.find_one({}, sort=[('datetime', -1)])
+        if doc is None:
+            return None
+        return doc_to_job(doc)
+    
+    async def add_job(self, args: JobArgs) -> Job:
+        doc = {
+            'datetime': datetime.now(timezone.utc),
+            'status': JobStatus.SUBMITTED.value,
+            'task_id': ObjectId(args['task_id']),
+            'args': args['args'],
+            'kwargs': args['kwargs']
+        }
+        result = await self.db.jobs.insert_one(doc)
+        doc['_id'] = result.inserted_id
+        return doc_to_job(doc)

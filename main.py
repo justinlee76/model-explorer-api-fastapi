@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from connection_manager import ConnectionManager
-from model_store import MetricHistory, Model, ModelStore
-from schemas import DeleteModelsResponse, MetricHistoryRequest, MetricHistoryUpdateData, ModelData, MetricHistoryKey, MetricHistoryData, ModelDeleteData, ModelInsertOrUpdateData, TagRequest
+from model_store import JobArgs, MetricHistory, Model, ModelStore, Task
+from schemas import AddJobResponse, DeleteModelsResponse, JobInputs, MetricHistoryRequest, MetricHistoryUpdateData, ModelData, MetricHistoryKey, MetricHistoryData, ModelDeleteData, ModelInsertOrUpdateData, TagRequest, TaskData
 
 from config import settings
 
@@ -184,5 +184,32 @@ async def connect_websocket(socket: WebSocket) -> None:
 async def delete_models(ids: list[str], store: ModelStore = Depends(get_model_store)) -> DeleteModelsResponse:
     exceptions = await store.delete_models(ids)
     return DeleteModelsResponse(errors={id: str(e) for id, e in exceptions.items()})
+
+@router.get('/tasks', response_model=list[TaskData])
+async def get_tasks(store: ModelStore = Depends(get_model_store)) -> list[Task]:
+    return [task async for task in store.get_tasks()]
+
+@router.get('/job-defaults', response_model=JobInputs)
+async def get_job_defaults(store: ModelStore = Depends(get_model_store)) -> JobInputs:
+    last_job = await store.get_last_job()
+    if last_job is not None:
+        return JobInputs(task_id=last_job['task_id'], args=last_job['args'], kwargs=last_job['kwargs'])
+
+    task = await anext(store.get_tasks(), None)
+    if task is not None:
+        task_id = task['id']
+    else:
+        logger.warning('Unable to provide a default task ID as no tasks exist in the model store')
+        task_id = ''
+    return JobInputs(task_id=task_id, args=[], kwargs={})
+
+@router.post('/add-job', response_model=AddJobResponse)
+async def add_job(inputs: JobInputs, store: ModelStore = Depends(get_model_store)) -> AddJobResponse:
+    try:
+        job = await store.add_job(JobArgs(**inputs.model_dump()))
+        return AddJobResponse(job_id=job['id'], error=None) 
+    except Exception as e:
+        logger.exception('Error adding job')
+        return AddJobResponse(job_id=None, error=str(e))
 
 app.include_router(router)

@@ -61,3 +61,16 @@ class ModelDeleteData(JsonModel):
 
 class DeleteModelsResponse(JsonModel):
     errors: dict[str, str]
+
+class TaskData(JsonModel):
+    id: str
+    full_class_name: str
+
+class JobInputs(JsonModel):
+    task_id: str
+    args: list[Any]
+    kwargs: dict[str, Any]
+
+class AddJobResponse(JsonModel):
+    job_id: str | None
+    error: str | None
