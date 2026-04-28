@@ -20,7 +20,7 @@ class ModelData(BaseModel):
     trainable_params: int
     min_val_loss: float | None
     max_val_accuracy: float | None
-    status: int
+    status: str
 
 class JsonModel(BaseModel):
     model_config = ConfigDict(
@@ -72,5 +72,16 @@ class JobInputs(JsonModel):
     kwargs: dict[str, Any]
 
 class AddJobResponse(JsonModel):
-    job_id: str | None
-    error: str | None
+    id: str
+
+class JobData(JsonModel):
+    id: str
+    datetime: datetime
+    task_id: str
+    args: list[Any]
+    kwargs: dict[str, Any]
+    status: str
+    model_id: str | None
+
+class StopJobRequest(JsonModel):
+    id: str

@@ -1,79 +1,18 @@
 from datetime import datetime, timezone
 import asyncio
 import logging
-from typing import Any, AsyncIterator, Literal, TypedDict
-from enum import Enum
+from typing import Any, AsyncIterator
 
 from bson import ObjectId
 from pymongo import AsyncMongoClient
 from pymongo.errors import PyMongoError
 from gridfs import AsyncGridFSBucket, NoFile
 
+from model_store_types import InvalidIdError, Job, JobArgs, JobStatus, MetricHistory, MetricHistoryUpdate, Model, ModelDelete, ModelInsertOrUpdate, ModelStatus, Task
+
 RETRY_DELAY_SECONDS = 1
 
 logger = logging.getLogger(__name__)
-
-class ModelStatus(Enum):
-    TRAINING = 0
-    TRAINED = 1
-
-class ModelRequired(TypedDict):
-    datetime: datetime
-    id: str
-    module: str
-    class_name: str
-    args: list[Any]
-    kwargs: dict[str, Any]
-    tag: str
-    trainable_params: int
-    status: int
-
-class Model(ModelRequired, total=False):
-    training_history: dict[str, list[float]]
-
-class MetricHistory(TypedDict):
-    id: str
-    metric_name: str
-    metric_history: list[float]
-
-class MetricHistoryUpdate(TypedDict):
-    type: Literal['metric-history.update']
-    id: str
-    metric_name: str
-    index: int
-    value: float
-
-class ModelInsertOrUpdate(TypedDict):
-    type: Literal['model.insert', 'model.update']
-    model: Model
-
-class ModelDelete(TypedDict):
-    type: Literal['model.delete']
-    tag: str
-    id: str
-
-class Task(TypedDict):
-    id: str
-    full_class_name: str
-
-class JobStatus(Enum):
-    SUBMITTED = 0
-    RUNNING = 1
-    COMPLETED = 2
-    FAILED = 3
-    STOPPING = 4
-    STOPPED = 5
-
-class JobArgs(TypedDict):
-    task_id: str
-    args: list[Any]
-    kwargs: dict[str, Any]    
-
-class Job(JobArgs):
-    id: str
-    datetime: datetime
-    status: JobStatus
-    model_id: str | None
 
 def doc_to_model(doc: dict[str, Any]) -> Model:
     model = Model(
@@ -85,7 +24,7 @@ def doc_to_model(doc: dict[str, Any]) -> Model:
         kwargs = doc['kwargs'],
         tag = doc['tag'],
         trainable_params = doc['trainable_params'],
-        status = doc['status'],
+        status = ModelStatus(doc['status']),
     )
     if 'training_history' in doc:
         model['training_history'] = doc['training_history']
@@ -117,8 +56,9 @@ class ModelStore:
     async def close(self) -> None:
         await self.client.close()
 
-    def is_valid_id(self, id: str) -> bool:
-        return ObjectId.is_valid(id)
+    def _validate_id(self, id: str):
+        if not ObjectId.is_valid(id):
+            raise InvalidIdError(id)
     
     async def get_tags(self) -> list[str]:
         tags = await self.db.models.distinct('tag')
@@ -167,6 +107,11 @@ class ModelStore:
                     'metric_name': '$_id', 
                     '_id': 0
                 }
+            },
+            {
+                '$sort': {
+                    'metric_name': 1
+                }
             }
         ]
         cursor = await self.db.models.aggregate(pipeline)
@@ -174,6 +119,12 @@ class ModelStore:
             yield doc['metric_name']
     
     async def get_metric_history(self, keys: list[tuple[str, str]]) -> AsyncIterator[MetricHistory]:
+        if not keys:
+            return
+        
+        for i, _ in keys:
+            self._validate_id(i)
+
         pipeline = [
             {
                 '$project': {
@@ -311,9 +262,11 @@ class ModelStore:
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
 
     async def _delete_model(self, id: str) -> None:
+        self._validate_id(id)
+
         obj_id = ObjectId(id)
         status = await self.db.models.find_one({'_id': obj_id}, {'status': 1})
-        if status is None or status.get('status') == ModelStatus.TRAINING.value:
+        if status is not None and status.get('status') == ModelStatus.TRAINING.value:
             raise Exception('Model cannot be deleted while training')
         
         result = await self.db.models.delete_one({'_id': obj_id})
@@ -326,6 +279,9 @@ class ModelStore:
             logger.warning('No file found for %s', id)
     
     async def delete_models(self, ids: list[str]) -> dict[str, BaseException]:
+        for id in ids:
+            self._validate_id(id)
+
         tasks = [self._delete_model(id) for id in ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -352,3 +308,28 @@ class ModelStore:
         result = await self.db.jobs.insert_one(doc)
         doc['_id'] = result.inserted_id
         return doc_to_job(doc)
+    
+    async def get_jobs(self) -> AsyncIterator[Job]:
+        projection = {
+            '_id': 1, 
+            'datetime': 1, 
+            'status': 1, 
+            'task_id': 1, 
+            'args': 1, 
+            'kwargs': 1,
+            'model_id': 1
+        }
+        async for doc in self.db.jobs.find({}, projection, sort=[('datetime', -1)]):
+            yield doc_to_job(doc)
+    
+    async def update_job_status(self, id: str, status: JobStatus) -> bool:
+        self._validate_id(id)
+
+        result = await self.db.jobs.update_one({'_id': ObjectId(id)}, {'$set': {'status': status.value}})
+        return result.matched_count > 0
+    
+    async def delete_job(self, id: str) -> bool:
+        self._validate_id(id)
+        
+        result = await self.db.jobs.delete_one({'_id': ObjectId(id)})
+        return result.deleted_count > 0

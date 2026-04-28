@@ -2,13 +2,15 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 from typing import AsyncIterator
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from connection_manager import ConnectionManager
-from model_store import JobArgs, MetricHistory, Model, ModelStore, Task
-from schemas import AddJobResponse, DeleteModelsResponse, JobInputs, MetricHistoryRequest, MetricHistoryUpdateData, ModelData, MetricHistoryKey, MetricHistoryData, ModelDeleteData, ModelInsertOrUpdateData, TagRequest, TaskData
+from model_store import ModelStore
+from model_store_types import InvalidIdError, Job, JobArgs, JobStatus, MetricHistory, Model, Task
+from schemas import AddJobResponse, DeleteModelsResponse, JobData, JobInputs, MetricHistoryRequest, MetricHistoryUpdateData, ModelData, MetricHistoryKey, MetricHistoryData, ModelDeleteData, ModelInsertOrUpdateData, StopJobRequest, TagRequest, TaskData
 
 from config import settings
 
@@ -41,8 +43,18 @@ def to_model_data(model: Model, metric_summary: dict[str, float | None]) -> Mode
         kwargs=model['kwargs'],
         tag=model['tag'],
         trainable_params=model['trainable_params'],
-        status=model['status'],
+        status=model['status'].name.capitalize(),
         **metric_summary)
+
+def to_job_data(job: Job) -> JobData:
+    return JobData(
+        id=job['id'],
+        datetime=job['datetime'],
+        task_id=job['task_id'],
+        status=job['status'].name.capitalize(),
+        args=job['args'],
+        kwargs=job['kwargs'],
+        model_id=job['model_id'])
 
 async def process_model_changes(store: ModelStore, connection_manager: ConnectionManager[SubscriptionKey]) -> None:
     async for change in store.watch_models():
@@ -98,6 +110,13 @@ app.add_middleware(
 
 router = APIRouter(prefix=settings.path_prefix)
 
+@app.exception_handler(InvalidIdError)
+async def invalid_id_exception_handler(request: Request, exc: InvalidIdError) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={'detail': str(exc)}
+    )
+
 @router.get('/tags', response_model=list[str])
 async def get_tags(store: ModelStore = Depends(get_model_store)) -> list[str]:
     tags = await store.get_tags()
@@ -113,15 +132,11 @@ async def get_models(tag: str, store: ModelStore = Depends(get_model_store)) -> 
 
 @router.get('/metric-names', response_model=list[str])
 async def get_metric_names(store: ModelStore = Depends(get_model_store)) -> list[str]:
-    metrics = sorted([m async for m in store.get_metric_names()])
+    metrics = [m async for m in store.get_metric_names()]
     return metrics
 
 @router.post('/metric-history', response_model=list[MetricHistoryData])
 async def get_metric_history(request: list[MetricHistoryKey], store: ModelStore = Depends(get_model_store)) -> list[MetricHistory]:
-    for k in request:
-        if not store.is_valid_id(k.id):
-            raise HTTPException(status_code=400, detail=f'Invalid id: {k.id}')
-    
     requested_keys = [(k.id, k.metric_name) for k in request]
     history_dict = {(h['id'], h['metric_name']): h async for h in store.get_metric_history(requested_keys)}
 
@@ -205,11 +220,21 @@ async def get_job_defaults(store: ModelStore = Depends(get_model_store)) -> JobI
 
 @router.post('/add-job', response_model=AddJobResponse)
 async def add_job(inputs: JobInputs, store: ModelStore = Depends(get_model_store)) -> AddJobResponse:
-    try:
-        job = await store.add_job(JobArgs(**inputs.model_dump()))
-        return AddJobResponse(job_id=job['id'], error=None) 
-    except Exception as e:
-        logger.exception('Error adding job')
-        return AddJobResponse(job_id=None, error=str(e))
+    job = await store.add_job(JobArgs(**inputs.model_dump()))
+    return AddJobResponse(id=job['id']) 
+
+@router.get('/jobs', response_model=list[JobData])
+async def get_jobs(store: ModelStore = Depends(get_model_store)) -> list[JobData]:
+    return [to_job_data(job) async for job in store.get_jobs()]
+
+@router.post('/stop-job', status_code=status.HTTP_204_NO_CONTENT)
+async def stop_job(request: StopJobRequest, store: ModelStore = Depends(get_model_store)) -> None:
+    if not await store.update_job_status(request.id, JobStatus.STOPPING):
+        raise HTTPException(status_code=404, detail='Job not found')
+
+@router.delete('/delete-job/{id}', status_code=status.HTTP_204_NO_CONTENT)
+async def delete_job(id: str, store: ModelStore = Depends(get_model_store)) -> None:
+    if not await store.delete_job(id):
+        raise HTTPException(status_code=404, detail='Job not found')
 
 app.include_router(router)
