@@ -8,7 +8,7 @@ from pymongo import AsyncMongoClient
 from pymongo.errors import PyMongoError
 from gridfs import AsyncGridFSBucket, NoFile
 
-from model_store_types import InvalidIdError, Job, JobArgs, JobStatus, MetricHistory, MetricHistoryUpdate, Model, ModelDelete, ModelInsertOrUpdate, ModelStatus, Task
+from model_store_types import InvalidIdError, Job, JobArgs, JobDelete, JobInsertOrUpdate, JobStatus, MetricHistory, MetricHistoryUpdate, Model, ModelDelete, ModelInsertOrUpdate, ModelStatus, Task
 
 RETRY_DELAY_SECONDS = 1
 
@@ -333,3 +333,48 @@ class ModelStore:
         
         result = await self.db.jobs.delete_one({'_id': ObjectId(id)})
         return result.deleted_count > 0
+    
+    async def watch_jobs(self) -> AsyncIterator[JobInsertOrUpdate | JobDelete]:
+        pipeline = [
+            {
+                '$match': {
+                    'operationType': {'$in': ['insert', 'update', 'delete']}
+                }
+            }
+        ]
+
+        while True:
+            try:
+                async with await self.db.jobs.watch(pipeline, full_document='updateLookup') as stream:
+                    async for change in stream:
+                        doc_key = change.get('documentKey') or {}
+                        obj_id = doc_key.get('_id')
+                        if obj_id is None:
+                            continue
+
+                        job_id = str(obj_id)
+
+                        match change['operationType']:
+                            case 'insert':
+                                full_doc = change.get('fullDocument')
+                                yield {
+                                    'type': 'job.insert',
+                                    'job': doc_to_job(full_doc)
+                                }
+
+                            case 'update':
+                                full_doc = change.get('fullDocument')
+                                yield {
+                                    'type': 'job.update',
+                                    'job': doc_to_job(full_doc)
+                                }
+
+                            case 'delete':
+                                yield {
+                                    'type': 'job.delete',
+                                    'id': job_id
+                                }
+
+            except PyMongoError:
+                logger.exception('Exception in change stream')
+                await asyncio.sleep(RETRY_DELAY_SECONDS)

@@ -10,9 +10,12 @@ from pydantic import ValidationError
 from connection_manager import ConnectionManager
 from model_store import ModelStore
 from model_store_types import InvalidIdError, Job, JobArgs, JobStatus, MetricHistory, Model, Task
-from schemas import AddJobResponse, DeleteModelsResponse, JobData, JobInputs, MetricHistoryRequest, MetricHistoryUpdateData, ModelData, MetricHistoryKey, MetricHistoryData, ModelDeleteData, ModelInsertOrUpdateData, StopJobRequest, TagRequest, TaskData
 
 from config import settings
+
+from schemas.common import JobData, MetricHistoryKey, ModelData
+from schemas.api import AddJobResponse, DeleteModelsResponse, JobInputs, MetricHistoryData, StopJobRequest, TaskData
+from schemas.websocket import JobDeleteData, JobInsertOrUpdateData, MetricHistoryRequest, MetricHistoryUpdateData, ModelDeleteData, ModelInsertOrUpdateData, TagRequest
 
 type SubscriptionKey = str | tuple[str, str]
 
@@ -80,19 +83,47 @@ async def process_model_changes(store: ModelStore, connection_manager: Connectio
         except Exception:
             logger.exception('Error processing model change')
 
+async def process_job_changes(store: ModelStore, connection_manager: ConnectionManager) -> None:
+    async for change in store.watch_jobs():
+        try:
+            match change['type']:
+                case 'job.insert' | 'job.update':
+                    job_data = to_job_data(change['job'])
+                    message = JobInsertOrUpdateData(type=change['type'], job=job_data)
+                    data = message.model_dump(by_alias=True)
+                    await connection_manager.broadcast(data)
+                
+                case 'job.delete':
+                    message = JobDeleteData(type='job.delete', id=change['id'])
+                    data = message.model_dump(by_alias=True)
+                    await connection_manager.broadcast(data)
+
+        except Exception:
+            logger.exception('Error processing job change')
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.store = ModelStore(settings.model_store.uri, settings.model_store.db)
-    app.state.connection_manager = ConnectionManager[SubscriptionKey]()
-    model_watcher = asyncio.create_task(process_model_changes(app.state.store, app.state.connection_manager))
+    app.state.models_connection_manager = ConnectionManager[SubscriptionKey]('models')
+    app.state.jobs_connection_manager = ConnectionManager('jobs')
+    models_watcher = asyncio.create_task(process_model_changes(app.state.store, app.state.models_connection_manager))
+    jobs_watcher = asyncio.create_task(process_job_changes(app.state.store, app.state.jobs_connection_manager))
     try:
         yield
     finally:
-        model_watcher.cancel()
-        try:
-            await model_watcher
-        except asyncio.CancelledError:
-            pass
+        models_watcher.cancel()
+        jobs_watcher.cancel()
+
+        results = await asyncio.gather(
+            models_watcher,
+            jobs_watcher,
+            return_exceptions=True
+        )
+
+        for name, result in zip(('models_watcher', 'jobs_watcher'), results):
+            if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+                logger.error('Error stopping task %s', name, exc_info=result)
+
         await app.state.store.close()
 
 def get_model_store(request: Request) -> ModelStore:
@@ -149,11 +180,11 @@ async def get_metric_history(request: list[MetricHistoryKey], store: ModelStore 
 
     return histories
 
-@router.websocket('/ws')
-async def connect_websocket(socket: WebSocket) -> None:
-    logger.debug('Connecting web socket')
+@router.websocket('/ws/models')
+async def connect_models_websocket(socket: WebSocket) -> None:
+    logger.debug('Connecting models web socket')
     
-    connection_manager: ConnectionManager[SubscriptionKey] = socket.app.state.connection_manager
+    connection_manager: ConnectionManager[SubscriptionKey] = socket.app.state.models_connection_manager
     await connection_manager.connect(socket)
 
     try:
@@ -192,7 +223,7 @@ async def connect_websocket(socket: WebSocket) -> None:
     except WebSocketDisconnect:
         await connection_manager.disconnect_one(socket)
     except Exception:
-        logger.exception('Error processing data over web socket')
+        logger.exception('Error processing data over models web socket')
         await connection_manager.disconnect_one(socket)
 
 @router.post('/delete-models', response_model=DeleteModelsResponse)
@@ -236,5 +267,22 @@ async def stop_job(request: StopJobRequest, store: ModelStore = Depends(get_mode
 async def delete_job(id: str, store: ModelStore = Depends(get_model_store)) -> None:
     if not await store.delete_job(id):
         raise HTTPException(status_code=404, detail='Job not found')
+
+@router.websocket('/ws/jobs')
+async def connect_jobs_websocket(socket: WebSocket) -> None:
+    logger.debug('Connecting jobs web socket')
+
+    connection_manager: ConnectionManager[SubscriptionKey] = socket.app.state.jobs_connection_manager
+    await connection_manager.connect(socket)
+
+    try:
+        while True:
+            await socket.receive_json()
+
+    except WebSocketDisconnect:
+        await connection_manager.disconnect_one(socket)
+    except Exception:
+        logger.exception('Error processing data over jobs web socket')
+        await connection_manager.disconnect_one(socket)
 
 app.include_router(router)

@@ -68,3 +68,10 @@ class Job(JobArgs):
     status: JobStatus
     model_id: str | None
 
+class JobInsertOrUpdate(TypedDict):
+    type: Literal['job.insert', 'job.update']
+    job: Job
+
+class JobDelete(TypedDict):
+    type: Literal['job.delete']
+    id: str
