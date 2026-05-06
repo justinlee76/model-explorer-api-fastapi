@@ -32,3 +32,13 @@ class JobInsertOrUpdateData(JsonModel):
 class JobDeleteData(JsonModel):
     type: Literal['job.delete']
     id: str
+
+class JobMessagesRequest(JsonModel):
+    type: Literal['job.messages.subscribe', 'job.messages.unsubscribe']
+    id: str
+
+class JobMessagesUpdateData(JsonModel):
+    type: Literal['job.messages.update']
+    id: str
+    index: int
+    message: str

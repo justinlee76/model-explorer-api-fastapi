@@ -75,3 +75,14 @@ class JobInsertOrUpdate(TypedDict):
 class JobDelete(TypedDict):
     type: Literal['job.delete']
     id: str
+
+class JobLogEntry(TypedDict):
+    datetime: datetime
+    level: str
+    message: str
+
+class JobMessagesUpdate(TypedDict):
+    type: Literal['job.messages.update']
+    id: str
+    index: int
+    log_entry: JobLogEntry

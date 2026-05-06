@@ -15,7 +15,7 @@ from config import settings
 
 from schemas.common import JobData, MetricHistoryKey, ModelData
 from schemas.api import AddJobResponse, DeleteModelsResponse, JobInputs, MetricHistoryData, StopJobRequest, TaskData
-from schemas.websocket import JobDeleteData, JobInsertOrUpdateData, MetricHistoryRequest, MetricHistoryUpdateData, ModelDeleteData, ModelInsertOrUpdateData, TagRequest
+from schemas.websocket import JobDeleteData, JobInsertOrUpdateData, JobMessagesRequest, JobMessagesUpdateData, MetricHistoryRequest, MetricHistoryUpdateData, ModelDeleteData, ModelInsertOrUpdateData, TagRequest
 
 type SubscriptionKey = str | tuple[str, str]
 
@@ -98,6 +98,11 @@ async def process_job_changes(store: ModelStore, connection_manager: ConnectionM
                     data = message.model_dump(by_alias=True)
                     await connection_manager.broadcast(data)
 
+                case 'job.messages.update':
+                    message = JobMessagesUpdateData(type=change['type'], id=change['id'], index=change['index'], message=change['log_entry']['message'])
+                    data = message.model_dump(by_alias=True)
+                    await connection_manager.send_to_subscribers(message.id, data)
+
         except Exception:
             logger.exception('Error processing job change')
 
@@ -105,7 +110,7 @@ async def process_job_changes(store: ModelStore, connection_manager: ConnectionM
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.store = ModelStore(settings.model_store.uri, settings.model_store.db)
     app.state.models_connection_manager = ConnectionManager[SubscriptionKey]('models')
-    app.state.jobs_connection_manager = ConnectionManager('jobs')
+    app.state.jobs_connection_manager = ConnectionManager[str]('jobs')
     models_watcher = asyncio.create_task(process_model_changes(app.state.store, app.state.models_connection_manager))
     jobs_watcher = asyncio.create_task(process_job_changes(app.state.store, app.state.jobs_connection_manager))
     try:
@@ -272,17 +277,35 @@ async def delete_job(id: str, store: ModelStore = Depends(get_model_store)) -> N
 async def connect_jobs_websocket(socket: WebSocket) -> None:
     logger.debug('Connecting jobs web socket')
 
-    connection_manager: ConnectionManager[SubscriptionKey] = socket.app.state.jobs_connection_manager
+    connection_manager: ConnectionManager[str] = socket.app.state.jobs_connection_manager
     await connection_manager.connect(socket)
 
     try:
         while True:
-            await socket.receive_json()
+            data = await socket.receive_json()
+            try:
+                message = JobMessagesRequest.model_validate(data)
+            except ValidationError:
+                logger.exception('Error validating message: %s', data)
+                continue
+
+            if message.type == 'job.messages.subscribe':
+                await connection_manager.subscribe_one(socket, message.id)
+            else:
+                await connection_manager.unsubscribe_one(socket, message.id)
 
     except WebSocketDisconnect:
         await connection_manager.disconnect_one(socket)
     except Exception:
         logger.exception('Error processing data over jobs web socket')
         await connection_manager.disconnect_one(socket)
+
+@router.get('/jobs/{id}/messages', response_model=list[str] | None)
+async def get_job_messages(id: str, store: ModelStore = Depends(get_model_store)) -> list[str] | None:
+    log_entries = await store.get_job_log_entries(id)
+    if log_entries is None:
+        raise HTTPException(status_code=404, detail='Job messages not found')
+
+    return [entry['message'] for entry in log_entries]
 
 app.include_router(router)

@@ -8,7 +8,7 @@ from pymongo import AsyncMongoClient
 from pymongo.errors import PyMongoError
 from gridfs import AsyncGridFSBucket, NoFile
 
-from model_store_types import InvalidIdError, Job, JobArgs, JobDelete, JobInsertOrUpdate, JobStatus, MetricHistory, MetricHistoryUpdate, Model, ModelDelete, ModelInsertOrUpdate, ModelStatus, Task
+from model_store_types import InvalidIdError, Job, JobArgs, JobDelete, JobInsertOrUpdate, JobLogEntry, JobMessagesUpdate, JobStatus, MetricHistory, MetricHistoryUpdate, Model, ModelDelete, ModelInsertOrUpdate, ModelStatus, Task
 
 RETRY_DELAY_SECONDS = 1
 
@@ -334,7 +334,7 @@ class ModelStore:
         result = await self.db.jobs.delete_one({'_id': ObjectId(id)})
         return result.deleted_count > 0
     
-    async def watch_jobs(self) -> AsyncIterator[JobInsertOrUpdate | JobDelete]:
+    async def watch_jobs(self) -> AsyncIterator[JobInsertOrUpdate | JobDelete | JobMessagesUpdate]:
         pipeline = [
             {
                 '$match': {
@@ -353,21 +353,71 @@ class ModelStore:
                             continue
 
                         job_id = str(obj_id)
+                        full_doc = change.get('fullDocument')
+                        job = None
+                        if full_doc is not None:
+                            job = doc_to_job(full_doc)
 
                         match change['operationType']:
                             case 'insert':
-                                full_doc = change.get('fullDocument')
+                                if job is None:
+                                    logger.warning('No job document found for insert operation')
+                                    continue
+
                                 yield {
                                     'type': 'job.insert',
-                                    'job': doc_to_job(full_doc)
+                                    'job': job
                                 }
 
                             case 'update':
-                                full_doc = change.get('fullDocument')
-                                yield {
-                                    'type': 'job.update',
-                                    'job': doc_to_job(full_doc)
-                                }
+                                if job is None:
+                                    logger.warning('No job document found for update operation')
+                                    continue
+
+                                update_description = change.get('updateDescription') or {}
+                                updated_fields = update_description.get('updatedFields')
+                                if not isinstance(updated_fields, dict):
+                                    continue
+
+                                send_job_update = False
+                                for field, value in updated_fields.items():
+                                    parts = field.split('.')
+
+                                    if parts[0] == 'logs':
+
+                                        if len(parts) == 2:
+                                            index_str = parts[1]
+                                            if not index_str.isdigit():
+                                                continue
+
+                                            index = int(index_str)
+                                            yield {
+                                                'type': 'job.messages.update',
+                                                'id': job_id,
+                                                'index': index,
+                                                'log_entry': value
+                                            }
+                                        
+                                        elif len(parts) == 1:
+                                            if not isinstance(value, list):
+                                                continue
+
+                                            for i, v in enumerate(value):
+                                                yield {
+                                                    'type': 'job.messages.update',
+                                                    'id': job_id,
+                                                    'index': i,
+                                                    'log_entry': v
+                                                }
+
+                                    else:
+                                        send_job_update = True
+
+                                if send_job_update:
+                                    yield {
+                                        'type': 'job.update',
+                                        'job': job
+                                    }
 
                             case 'delete':
                                 yield {
@@ -378,3 +428,12 @@ class ModelStore:
             except PyMongoError:
                 logger.exception('Exception in change stream')
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
+
+    async def get_job_log_entries(self, id: str) -> list[JobLogEntry] | None:
+        self._validate_id(id)
+
+        doc = await self.db.jobs.find_one({'_id': ObjectId(id)}, {'_id': 0, 'logs': 1})
+        if doc is None:
+            return None
+
+        return doc.get('logs', [])
