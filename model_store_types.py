@@ -10,6 +10,12 @@ class ModelStatus(Enum):
     TRAINING = 0
     TRAINED = 1
 
+class MetricSummary(TypedDict):
+    train_loss: float | None
+    train_accuracy: float | None
+    val_loss: float | None
+    val_accuracy: float | None
+
 class ModelRequired(TypedDict):
     datetime: datetime
     id: str
@@ -22,12 +28,12 @@ class ModelRequired(TypedDict):
     status: ModelStatus
 
 class Model(ModelRequired, total=False):
-    training_history: dict[str, list[float]]
+    metrics: dict[str, float]
 
 class MetricHistory(TypedDict):
     id: str
     metric_name: str
-    metric_history: list[float]
+    values: list[float]
 
 class MetricHistoryUpdate(TypedDict):
     type: Literal['metric-history.update']

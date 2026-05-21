@@ -23,20 +23,13 @@ logging.basicConfig(level=logging.DEBUG)
 logging.getLogger('pymongo').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-def get_metric_summary(model: Model) -> dict[str, float | None]:
+def to_model_data(model: Model) -> ModelData:
     min_val_loss = None
     max_val_accuracy = None
-    history = model.get('training_history')
-    if history:
-        val_loss: list[float] = history.get('val_loss', [])
-        if val_loss:
-            min_val_loss = min(val_loss)
-        val_accuracy: list[float] = history.get('val_accuracy', [])
-        if val_accuracy:
-            max_val_accuracy = max(val_accuracy)
-    return {'min_val_loss': min_val_loss, 'max_val_accuracy': max_val_accuracy}
-
-def to_model_data(model: Model, metric_summary: dict[str, float | None]) -> ModelData:
+    metric_summary = model.get('metrics')
+    if metric_summary is not None:
+        min_val_loss = metric_summary.get('min_val_loss')
+        max_val_accuracy = metric_summary.get('max_val_accuracy')
     return ModelData(
         datetime=model['datetime'],
         id=model['id'],
@@ -47,7 +40,8 @@ def to_model_data(model: Model, metric_summary: dict[str, float | None]) -> Mode
         tag=model['tag'],
         trainable_params=model['trainable_params'],
         status=model['status'].name.capitalize(),
-        **metric_summary)
+        min_val_loss=min_val_loss,
+        max_val_accuracy=max_val_accuracy)
 
 def to_job_data(job: Job) -> JobData:
     return JobData(
@@ -69,8 +63,7 @@ async def process_model_changes(store: ModelStore, connection_manager: Connectio
                     await connection_manager.send_to_subscribers((message.id, message.metric_name), data)
                 
                 case 'model.insert' | 'model.update':
-                    metric_summary = get_metric_summary(change['model'])
-                    model_data = to_model_data(change['model'], metric_summary)
+                    model_data = to_model_data(change['model'])
                     message = ModelInsertOrUpdateData(type=change['type'], model=model_data)
                     data = message.model_dump(by_alias=True)
                     await connection_manager.send_to_subscribers(message.model.tag, data)
@@ -162,8 +155,7 @@ async def get_tags(store: ModelStore = Depends(get_model_store)) -> list[str]:
 async def get_models(tag: str, store: ModelStore = Depends(get_model_store)) -> list[Model]:
     models = []
     async for model in store.get_models(tag):
-        metric_summary = get_metric_summary(model)
-        models.append(to_model_data(model, metric_summary))
+        models.append(to_model_data(model))
     return models
 
 @router.get('/metric-names', response_model=list[str])
@@ -180,7 +172,7 @@ async def get_metric_history(request: list[MetricHistoryKey], store: ModelStore 
     for key in requested_keys:
         history = history_dict.get(key)
         if history is None:
-            history = MetricHistory(id=key[0], metric_name=key[1], metric_history=[])
+            history = MetricHistory(id=key[0], metric_name=key[1], values=[])
         histories.append(history)
 
     return histories

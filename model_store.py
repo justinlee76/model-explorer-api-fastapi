@@ -26,8 +26,8 @@ def doc_to_model(doc: dict[str, Any]) -> Model:
         trainable_params = doc['trainable_params'],
         status = ModelStatus(doc['status']),
     )
-    if 'training_history' in doc:
-        model['training_history'] = doc['training_history']
+    if 'metrics' in doc:
+        model['metrics'] = doc['metrics']
     return model
 
 def doc_to_task(doc: dict[str, Any]) -> Task:
@@ -77,7 +77,7 @@ class ModelStore:
                 'tag': 1, 
                 'trainable_params': 1, 
                 'status': 1,
-                'training_history': 1
+                'metrics': 1
             })
         async for doc in cursor:
             yield doc_to_model(doc)
@@ -87,19 +87,19 @@ class ModelStore:
             {
                 '$project': {
                     '_id': 0, 
-                    'metrics': {
+                    'history': {
                         '$objectToArray': '$training_history'
                     }
                 }
             }, 
             {
                 '$unwind': {
-                    'path': '$metrics'
+                    'path': '$history'
                 }
             }, 
             {
                 '$group': {
-                    '_id': '$metrics.k'
+                    '_id': '$history.k'
                 }
             }, 
             {
@@ -129,29 +129,29 @@ class ModelStore:
             {
                 '$project': {
                     '_id': 1, 
-                    'metrics': {
+                    'history': {
                         '$objectToArray': '$training_history'
                     }
                 }
             },
             {
                 '$unwind': {
-                    'path': '$metrics', 
+                    'path': '$history', 
                     'preserveNullAndEmptyArrays': True
                 }
             },
             {
                 '$match': {
                     '$or': [
-                        { '_id': ObjectId(i), 'metrics.k': m } for i, m in keys
+                        { '_id': ObjectId(i), 'history.k': m } for i, m in keys
                     ]
                 }
             },
             {
                 '$project': {
                     '_id': 1, 
-                    'metric_name': '$metrics.k', 
-                    'metric_history': '$metrics.v'
+                    'metric_name': '$history.k', 
+                    'values': '$history.v'
                 }
             }
         ]
@@ -206,6 +206,8 @@ class ModelStore:
                                 send_model_update = False
                                 for field, value in updated_fields.items():
                                     parts = field.split('.')
+                                    if len(parts) == 0:
+                                        continue
                                     
                                     if parts[0] == 'training_history':
                                         send_model_update = True
@@ -241,7 +243,7 @@ class ModelStore:
                                                         'value': v
                                                     }
 
-                                    elif field == 'status':
+                                    elif parts[0] == 'metrics' or field == 'status':
                                         send_model_update = True
                                 
                                 if send_model_update:

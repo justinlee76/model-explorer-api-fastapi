@@ -3,7 +3,7 @@ from typing import Any
 from .common import JsonModel, MetricHistoryKey
 
 class MetricHistoryData(MetricHistoryKey):
-    metric_history: list[float]
+    values: list[float]
 
 class DeleteModelsResponse(JsonModel):
     errors: dict[str, str]
