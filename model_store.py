@@ -56,7 +56,7 @@ class ModelStore:
     async def close(self) -> None:
         await self.client.close()
 
-    def _validate_id(self, id: str):
+    def _validate_id(self, id: str) -> None:
         if not ObjectId.is_valid(id):
             raise InvalidIdError(id)
     
@@ -187,6 +187,9 @@ class ModelStore:
                                 continue
                         else:
                             full_doc = change.get('fullDocument')
+                            if full_doc is None:
+                                logger.warning('fullDocument not found for %s operation', change['operationType'])
+                                continue
 
                         model = doc_to_model(full_doc)
 
@@ -300,6 +303,8 @@ class ModelStore:
         return doc_to_job(doc)
     
     async def add_job(self, args: JobArgs) -> Job:
+        self._validate_id(args['task_id'])
+
         doc = {
             'datetime': datetime.now(timezone.utc),
             'status': JobStatus.SUBMITTED.value,

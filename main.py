@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from connection_manager import ConnectionManager
 from model_store import ModelStore
-from model_store_types import InvalidIdError, Job, JobArgs, JobStatus, MetricHistory, Model, Task
+from model_store_types import InvalidIdError, Job, JobArgs, JobStatus, Model
 
 from config import settings
 
@@ -76,7 +76,7 @@ async def process_model_changes(store: ModelStore, connection_manager: Connectio
         except Exception:
             logger.exception('Error processing model change')
 
-async def process_job_changes(store: ModelStore, connection_manager: ConnectionManager) -> None:
+async def process_job_changes(store: ModelStore, connection_manager: ConnectionManager[str]) -> None:
     async for change in store.watch_jobs():
         try:
             match change['type']:
@@ -152,7 +152,7 @@ async def get_tags(store: ModelStore = Depends(get_model_store)) -> list[str]:
     return tags
 
 @router.get('/models', response_model=list[ModelData])
-async def get_models(tag: str, store: ModelStore = Depends(get_model_store)) -> list[Model]:
+async def get_models(tag: str, store: ModelStore = Depends(get_model_store)) -> list[ModelData]:
     models = []
     async for model in store.get_models(tag):
         models.append(to_model_data(model))
@@ -164,16 +164,17 @@ async def get_metric_names(store: ModelStore = Depends(get_model_store)) -> list
     return metrics
 
 @router.post('/metric-history', response_model=list[MetricHistoryData])
-async def get_metric_history(request: list[MetricHistoryKey], store: ModelStore = Depends(get_model_store)) -> list[MetricHistory]:
+async def get_metric_history(request: list[MetricHistoryKey], store: ModelStore = Depends(get_model_store)) -> list[MetricHistoryData]:
     requested_keys = [(k.id, k.metric_name) for k in request]
     history_dict = {(h['id'], h['metric_name']): h async for h in store.get_metric_history(requested_keys)}
 
-    histories: list[MetricHistory] = []
+    histories: list[MetricHistoryData] = []
     for key in requested_keys:
         history = history_dict.get(key)
         if history is None:
-            history = MetricHistory(id=key[0], metric_name=key[1], values=[])
-        histories.append(history)
+            histories.append(MetricHistoryData(id=key[0], metric_name=key[1], values=[]))
+        else:
+            histories.append(MetricHistoryData(**history))
 
     return histories
 
@@ -226,11 +227,11 @@ async def connect_models_websocket(socket: WebSocket) -> None:
 @router.post('/delete-models', response_model=DeleteModelsResponse)
 async def delete_models(ids: list[str], store: ModelStore = Depends(get_model_store)) -> DeleteModelsResponse:
     exceptions = await store.delete_models(ids)
-    return DeleteModelsResponse(errors={id: str(e) for id, e in exceptions.items()})
+    return DeleteModelsResponse(errors={model_id: str(error) for model_id, error in exceptions.items()})
 
 @router.get('/tasks', response_model=list[TaskData])
-async def get_tasks(store: ModelStore = Depends(get_model_store)) -> list[Task]:
-    return [task async for task in store.get_tasks()]
+async def get_tasks(store: ModelStore = Depends(get_model_store)) -> list[TaskData]:
+    return [TaskData(**task) async for task in store.get_tasks()]
 
 @router.get('/job-defaults', response_model=JobInputs)
 async def get_job_defaults(store: ModelStore = Depends(get_model_store)) -> JobInputs:
