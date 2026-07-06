@@ -14,6 +14,14 @@ FastAPI backend for browsing stored model runs, streaming model/job updates over
 
 - Python 3.12+
 - MongoDB replica set or deployment that supports change streams
+- The MongoDB `models` collection must have change stream pre/post images enabled:
+
+```javascript
+db.runCommand({
+  collMod: "models",
+  changeStreamPreAndPostImages: { enabled: true }
+})
+```
 
 ## Getting started
 
