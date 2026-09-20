@@ -270,11 +270,12 @@ class ModelStore:
         self._validate_id(id)
 
         obj_id = ObjectId(id)
-        status = await self.db.models.find_one({'_id': obj_id}, {'status': 1})
-        if status is not None and status.get('status') == ModelStatus.TRAINING.value:
-            raise Exception('Model cannot be deleted while training')
         
-        result = await self.db.models.delete_one({'_id': obj_id})
+        result = await self.db.models.delete_one(
+            {
+                '_id': obj_id,
+                'status': ModelStatus.TRAINED.value
+            })
         if result.deleted_count == 0:
             return
         
