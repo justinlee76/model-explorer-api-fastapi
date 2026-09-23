@@ -284,14 +284,15 @@ class ModelStore:
         except NoFile:
             logger.warning('No file found for %s', id)
     
-    async def delete_models(self, ids: list[str]) -> dict[str, BaseException]:
+    async def delete_models(self, ids: list[str]) -> None:
         for id in ids:
             self._validate_id(id)
 
-        tasks = [self._delete_model(id) for id in ids]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        return {id: result for id, result in zip(ids, results) if isinstance(result, BaseException)}
+        for id in ids:
+            try:
+                await self._delete_model(id)
+            except Exception as error:
+                raise RuntimeError(f'Failed to delete model {id}: {error}') from error
     
     async def get_tasks(self) -> AsyncIterator[Task]:
         async for doc in self.db.tasks.find():

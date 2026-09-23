@@ -101,7 +101,7 @@ With the example `PATH_PREFIX`, the REST API is available under `/api`. JSON fie
 | `GET` | `/api/models?tag=...` | List model runs for a tag. |
 | `GET` | `/api/metric-names` | List stored metric names. |
 | `POST` | `/api/metric-history` | Return histories for model/metric key objects. |
-| `POST` | `/api/delete-models` | Delete model IDs supplied as a JSON string array and return any per-ID errors. |
+| `POST` | `/api/delete-models` | Delete model IDs supplied as a JSON string array in order and return one error message if deletion fails. |
 | `GET` | `/api/tasks` | List registered training tasks. |
 | `GET` | `/api/job-defaults` | Return inputs from the latest job, or the first registered task. |
 | `POST` | `/api/add-job` | Add a submitted training job. |
@@ -109,6 +109,8 @@ With the example `PATH_PREFIX`, the REST API is available under `/api`. JSON fie
 | `POST` | `/api/stop-job` | Move a job to the stopping state. |
 | `DELETE` | `/api/delete-job/{id}` | Delete a job. |
 | `GET` | `/api/jobs/{id}/messages` | Return a job's log messages. |
+
+`POST /api/delete-models` returns `{"error": null}` on success or one `error` message identifying the model whose deletion failed. Deletion stops at the first failure; the response contains no deletion count.
 
 For example, submit a job using a task ID returned by `GET /api/tasks`:
 

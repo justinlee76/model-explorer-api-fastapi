@@ -226,8 +226,13 @@ async def connect_models_websocket(socket: WebSocket) -> None:
 
 @router.post('/delete-models', response_model=DeleteModelsResponse)
 async def delete_models(ids: list[str], store: ModelStore = Depends(get_model_store)) -> DeleteModelsResponse:
-    exceptions = await store.delete_models(ids)
-    return DeleteModelsResponse(errors={model_id: str(error) for model_id, error in exceptions.items()})
+    try:
+        await store.delete_models(ids)
+    except InvalidIdError:
+        raise
+    except Exception as error:
+        return DeleteModelsResponse(error=str(error))
+    return DeleteModelsResponse()
 
 @router.get('/tasks', response_model=list[TaskData])
 async def get_tasks(store: ModelStore = Depends(get_model_store)) -> list[TaskData]:

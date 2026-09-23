@@ -6,7 +6,7 @@ class MetricHistoryData(MetricHistoryKey):
     values: list[float]
 
 class DeleteModelsResponse(JsonModel):
-    errors: dict[str, str]
+    error: str | None = None
 
 class TaskData(JsonModel):
     id: str
